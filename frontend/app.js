@@ -3,6 +3,7 @@ const API_BASE = window.KILL_SWITCH_API_BASE || "";
 const els = {
   connectionPill: document.querySelector("#connectionPill"),
   loginBtn: document.querySelector("#loginBtn"),
+  saveSettingsBtn: document.querySelector("#saveSettingsBtn"),
   connectBtn: document.querySelector("#connectBtn"),
   manualKillBtn: document.querySelector("#manualKillBtn"),
   stopBtn: document.querySelector("#stopBtn"),
@@ -26,14 +27,26 @@ const els = {
   toast: document.querySelector("#toast"),
 };
 
+const settingsFields = [els.maxLoss, els.pnlPollMs, els.guardPollMs];
+let userEditingSettings = false;
+
 const urlToken = new URLSearchParams(window.location.search).get("request_token");
 if (urlToken) els.requestToken.value = urlToken;
 
 els.loginBtn.addEventListener("click", openLogin);
+els.saveSettingsBtn.addEventListener("click", saveSettings);
 els.connectBtn.addEventListener("click", connect);
 els.manualKillBtn.addEventListener("click", manualKill);
 els.stopBtn.addEventListener("click", stopMonitoring);
 els.refreshBtn.addEventListener("click", refresh);
+settingsFields.forEach((field) => {
+  field.addEventListener("input", () => {
+    userEditingSettings = true;
+  });
+  field.addEventListener("change", () => {
+    userEditingSettings = true;
+  });
+});
 
 refresh();
 setInterval(refresh, 2500);
@@ -55,13 +68,24 @@ async function connect() {
       method: "POST",
       body: {
         requestToken,
-        maxLoss: Number(els.maxLoss.value),
-        pnlPollMs: Number(els.pnlPollMs.value),
-        guardPollMs: Number(els.guardPollMs.value),
+        ...settingsPayload(),
       },
     });
+    userEditingSettings = false;
     render(state);
     toast("Connected. Monitoring is live.");
+  });
+}
+
+async function saveSettings() {
+  await withBusy(els.saveSettingsBtn, async () => {
+    const state = await api("/api/settings", {
+      method: "POST",
+      body: settingsPayload(),
+    });
+    userEditingSettings = false;
+    render(state, { forceSettings: true });
+    toast("Settings saved.");
   });
 }
 
@@ -96,10 +120,12 @@ async function refresh() {
   }
 }
 
-function render(state) {
-  els.maxLoss.value = state.settings?.maxLoss || els.maxLoss.value;
-  els.pnlPollMs.value = String(state.settings?.pnlPollMs || els.pnlPollMs.value);
-  els.guardPollMs.value = String(state.settings?.guardPollMs || els.guardPollMs.value);
+function render(state, options = {}) {
+  if (options.forceSettings || !userEditingSettings) {
+    els.maxLoss.value = state.settings?.maxLoss || els.maxLoss.value;
+    els.pnlPollMs.value = String(state.settings?.pnlPollMs || els.pnlPollMs.value);
+    els.guardPollMs.value = String(state.settings?.guardPollMs || els.guardPollMs.value);
+  }
 
   els.connectionPill.className = "status-pill";
   if (state.kill?.active) {
@@ -127,6 +153,14 @@ function render(state) {
   renderPositions(state.positions || []);
   renderOrders(state.orders || []);
   renderLog(state.actions || []);
+}
+
+function settingsPayload() {
+  return {
+    maxLoss: Number(els.maxLoss.value),
+    pnlPollMs: Number(els.pnlPollMs.value),
+    guardPollMs: Number(els.guardPollMs.value),
+  };
 }
 
 function renderPositions(positions) {
