@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Kill Switch — Kite by Zerodha</title>
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet"/>
+<style>
+/* ── KITE DESIGN TOKENS ── */
+:root {
+  --blue: #387ED1;
+  --blue-light: #e8f1fb;
+  --blue-dark: #2e6db8;
+  --green: #43A047;
+  --green-light: #eef7ee;
+  --red: #E15241;
+  --red-light: #fdf3f2;
+  --amber: #F57F17;
+  --amber-light: #fff8e1;
+  --text: #333;
+  --text-muted: #999;
+  --text-light: #bbb;
+  --border: #e0e0e0;
+  --border-light: #f0f0f0;
+  --bg: #f5f5f5;
+  --bg-white: #fff;
+  --bg-hover: #fafcff;
+  --nav-h: 48px;
+  --font: 'Lato', sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 13px; min-height: 100vh; }
+ 
+/* ── NAV ── */
+.nav {
+  background: var(--blue);
+  height: var(--nav-h);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  position: sticky; top: 0; z-index: 200;
+  box-shadow: 0 1px 4px rgba(0,0,0,.18);
+}
+.nav-logo { display: flex; align-items: baseline; gap: 2px; margin-right: 20px; text-decoration: none; }
+.nav-logo-kite { color: #fff; font-size: 17px; font-weight: 700; }
+.nav-logo-by   { color: rgba(255,255,255,.55); font-size: 11px; font-weight: 300; margin: 0 3px; }
+.nav-logo-z    { color: rgba(255,255,255,.85); font-size: 13px; font-weight: 400; }
+.nav-divider   { width: 1px; height: 18px; background: rgba(255,255,255,.28); margin: 0 16px; }
+.nav-section   { color: rgba(255,255,255,.9); font-size: 13px; font-weight: 700; }
+.nav-right     { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+.nav-status    { display: flex; align-items: center; gap: 6px; font-size: 11px; color: rgba(255,255,255,.75); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.3); flex-shrink: 0; }
+.dot.live   { background: #69f0ae; box-shadow: 0 0 0 2px rgba(105,240,174,.3); animation: blink 2s infinite; }
+.dot.killed { background: #ff6b6b; box-shadow: 0 0 0 2px rgba(255,107,107,.3); }
+.dot.paused { background: #ffd740; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+.nav-btn {
+  background: rgba(255,255,255,.15);
+  border: 1px solid rgba(255,255,255,.28);
+  color: #fff; font-size: 12px; font-weight: 700;
+  padding: 4px 12px; border-radius: 3px; cursor: pointer;
+  font-family: var(--font); transition: background .15s;
+}
+.nav-btn:hover { background: rgba(255,255,255,.27); }
+ 
+/* ── PAGE ── */
+.page { max-width: 880px; margin: 0 auto; padding: 20px 16px; }
+ 
+/* ── KILL ALERT ── */
+.kill-alert {
+  display: none;
+  background: var(--red-light);
+  border: 1px solid #f5c6c2;
+  border-left: 3px solid var(--red);
+  border-radius: 3px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  align-items: center;
+  gap: 14px;
+}
+.kill-alert.show { display: flex; }
+.kill-alert-icon { font-size: 20px; flex-shrink: 0; }
+.kill-alert-body { flex: 1; }
+.kill-alert-body h4 { font-size: 13px; font-weight: 700; color: var(--red); margin-bottom: 3px; }
+.kill-alert-body p  { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.kill-alert-timer   { text-align: right; flex-shrink: 0; }
+.kill-alert-timer .lbl  { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
+.kill-alert-timer .val  { font-size: 22px; font-weight: 900; color: var(--red); font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+ 
+/* ── CARD ── */
+.card {
+  background: var(--bg-white);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.card-head {
+  padding: 10px 14px 9px;
+  border-bottom: 1px solid var(--border-light);
+  display: flex; align-items: center; justify-content: space-between;
+  background: #fafafa;
+}
+.card-head-title {
+  font-size: 11px; font-weight: 700; color: var(--text-muted);
+  letter-spacing: .7px; text-transform: uppercase;
+}
+.card-body { padding: 16px; }
+ 
+/* ── BADGE ── */
+.badge {
+  display: inline-flex; align-items: center;
+  font-size: 10px; font-weight: 700; padding: 2px 7px;
+  border-radius: 2px; letter-spacing: .4px; text-transform: uppercase;
+}
+.badge-blue   { background: var(--blue-light);  color: var(--blue); }
+.badge-green  { background: var(--green-light); color: var(--green); }
+.badge-red    { background: var(--red-light);   color: var(--red); }
+.badge-amber  { background: var(--amber-light); color: var(--amber); }
+.badge-grey   { background: #f0f0f0; color: #888; }
+ 
+/* ── FORM ── */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+.form-row  { display: flex; flex-direction: column; gap: 4px; }
+.form-label {
+  font-size: 11px; font-weight: 700; color: var(--text-muted);
+  letter-spacing: .5px; text-transform: uppercase;
+}
+.form-input {
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 7px 10px; font-size: 13px;
+  font-family: var(--font); color: var(--text);
+  outline: none; background: #fff;
+  transition: border-color .15s, box-shadow .15s;
+}
+.form-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(56,126,209,.1); }
+.form-input::placeholder { color: var(--text-light); }
+.form-hint { font-size: 11px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+ 
+/* ── BUTTONS ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border: none; border-radius: 3px; cursor: pointer;
+  font-family: var(--font); font-size: 13px; font-weight: 700;
+  padding: 8px 16px; transition: background .15s, opacity .1s;
+  white-space: nowrap; line-height: 1;
+}
+.btn:active  { opacity: .82; }
+.btn:disabled{ opacity: .4; cursor: not-allowed; }
+.btn-primary   { background: var(--blue);  color: #fff; }
+.btn-primary:hover   { background: var(--blue-dark); }
+.btn-secondary { background: #fff; color: var(--blue); border: 1px solid var(--blue); }
+.btn-secondary:hover { background: var(--blue-light); }
+.btn-danger    { background: var(--red);   color: #fff; }
+.btn-danger:hover    { background: #c0392b; }
+.btn-ghost     { background: #f5f5f5; color: #666; border: 1px solid var(--border); }
+.btn-ghost:hover     { background: #eee; }
+.btn-warning   { background: var(--amber); color: #fff; }
+.btn-warning:hover   { background: #e65100; }
+ 
+/* ── AUTH BOX ── */
+.auth-wrap { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-light); }
+.auth-wrap.show { display: block; }
+.auth-step { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; line-height: 1.5; }
+.auth-step strong { color: var(--text); }
+.url-box {
+  background: #f9f9f9; border: 1px solid var(--border); border-radius: 3px;
+  padding: 8px 10px; font-size: 11px; font-family: monospace;
+  color: #666; word-break: break-all; margin-bottom: 12px;
+}
+.url-box a { color: var(--blue); text-decoration: none; }
+.url-box a:hover { text-decoration: underline; }
+ 
+/* ── PNL BLOCK ── */
+.pnl-fig {
+  font-size: 34px; font-weight: 900; letter-spacing: -1.5px; line-height: 1;
+  transition: color .3s;
+}
+.pnl-fig.pos { color: var(--green); }
+.pnl-fig.neg { color: var(--red); }
+.pnl-fig.neu { color: var(--text); }
+.pnl-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+ 
+/* ── PROGRESS ── */
+.prog-wrap { margin-top: 14px; }
+.prog-meta {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--text-muted); margin-bottom: 5px;
+}
+.prog-track { height: 3px; background: var(--border-light); border-radius: 99px; overflow: hidden; }
+.prog-fill  { height: 100%; border-radius: 99px; background: var(--green); transition: width .6s ease, background .4s; }
+ 
+/* ── TILES ── */
+.tiles { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 12px; }
+.tile  {
+  background: var(--bg-white); border: 1px solid var(--border); border-radius: 3px;
+  padding: 12px 14px;
+}
+.tile-lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; margin-bottom: 5px; }
+.tile-val { font-size: 17px; font-weight: 700; }
+.tile-val.pos { color: var(--green); }
+.tile-val.neg { color: var(--red); }
+.tile-val.neu { color: var(--text); }
+ 
+/* ── TABLE ── */
+.kite-tbl { width: 100%; border-collapse: collapse; }
+.kite-tbl thead th {
+  font-size: 11px; font-weight: 700; color: var(--text-muted);
+  letter-spacing: .5px; text-transform: uppercase;
+  padding: 8px 14px; text-align: left;
+  border-bottom: 1px solid var(--border-light);
+  background: #fafafa;
+}
+.kite-tbl thead th.r { text-align: right; }
+.kite-tbl tbody td {
+  padding: 9px 14px; font-size: 13px; color: var(--text);
+  border-bottom: 1px solid var(--border-light);
+}
+.kite-tbl tbody td.r { text-align: right; font-variant-numeric: tabular-nums; }
+.kite-tbl tbody tr:last-child td { border-bottom: none; }
+.kite-tbl tbody tr:hover { background: var(--bg-hover); }
+.sym  { font-weight: 700; }
+.exch { font-size: 10px; color: var(--text-light); }
+.chip {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 2px; letter-spacing: .4px;
+}
+.chip-b { background: var(--green-light); color: var(--green); }
+.chip-s { background: var(--red-light);   color: var(--red); }
+.pval   { font-weight: 700; }
+.ppos   { color: var(--green); }
+.pneg   { color: var(--red); }
+.empty  { padding: 28px; text-align: center; color: var(--text-light); font-size: 12px; }
+ 
+/* ── CONTROLS ── */
+.ctrl-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+ 
+/* ── LOG ── */
+.log-inner { padding: 8px 14px; max-height: 148px; overflow-y: auto; }
+.log-line  { display: flex; gap: 10px; font-size: 11px; font-family: monospace; padding: 2px 0; line-height: 1.55; }
+.log-ts    { color: var(--text-light); flex-shrink: 0; }
+.log-ok    { color: var(--green); }
+.log-warn  { color: var(--amber); }
+.log-err   { color: var(--red); }
+.log-info  { color: #777; }
+ 
+/* hidden */
+#dashboard { display: none; }
+#dashboard.show { display: block; }
+ 
+@media (max-width: 520px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .tiles     { grid-template-columns: 1fr 1fr; }
+  .ctrl-row .btn { flex: 1; }
+  .kill-alert-timer { display: none; }
+}
+</style>
+</head>
+<body>
+ 
+<!-- ══ NAV ══ -->
+<nav class="nav">
+  <div class="nav-logo">
+    <span class="nav-logo-kite">kite</span>
+    <span class="nav-logo-by">by</span>
+    <span class="nav-logo-z">zerodha</span>
+  </div>
+  <div class="nav-divider"></div>
+  <span class="nav-section">Kill Switch</span>
+  <div class="nav-right">
+    <div class="nav-status">
+      <div class="dot" id="navDot"></div>
+      <span id="navStatus">Not connected</span>
+    </div>
+    <button class="nav-btn" id="navLogout" style="display:none" onclick="logout()">Logout</button>
+  </div>
+</nav>
+ 
+<div class="page">
+ 
+  <!-- KILL ALERT -->
+  <div class="kill-alert" id="killAlert">
+    <div class="kill-alert-icon">🛑</div>
+    <div class="kill-alert-body">
+      <h4>Kill Switch Activated — Trading blocked for today</h4>
+      <p>Your loss limit was hit. All pending orders have been cancelled. You can resume trading at 9:15 AM tomorrow.</p>
+    </div>
+    <div class="kill-alert-timer">
+      <div class="lbl">Resumes in</div>
+      <div class="val" id="countdown">--:--:--</div>
+    </div>
+  </div>
+ 
+  <!-- ══ SETUP ══ -->
+  <div id="setupPanel">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-head-title">Connect to Kite</span>
+        <span class="badge badge-blue">Kite Connect v3</span>
+      </div>
+      <div class="card-body">
+        <div class="form-grid">
+          <div class="form-row">
+            <label class="form-label">API Key</label>
+            <input class="form-input" id="apiKey" type="text" placeholder="e.g. kitexxxxxxxxxxx"/>
+          </div>
+          <div class="form-row">
+            <label class="form-label">API Secret</label>
+            <input class="form-input" id="apiSecret" type="password" placeholder="Your API secret"/>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <label class="form-label">Max Loss Limit (₹)</label>
+            <input class="form-input" id="lossLimit" type="number" value="10000" min="100"/>
+            <span class="form-hint">Kill switch activates when loss ≥ this amount</span>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Check Interval (mins)</label>
+            <input class="form-input" id="pollInterval" type="number" value="2" min="1" max="15"/>
+            <span class="form-hint">How often to poll your positions P&amp;L</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="connectBtn" onclick="startLogin()">Login with Zerodha →</button>
+          <button class="btn btn-ghost"   onclick="demoMode()">Try Demo Mode</button>
+        </div>
+ 
+        <!-- AUTH STEPS -->
+        <div class="auth-wrap" id="authWrap">
+          <p class="auth-step">1 &nbsp;Click the link below to log in via Zerodha:</p>
+          <div class="url-box" id="urlBox"></div>
+          <p class="auth-step">2 &nbsp;After login, Zerodha redirects to your redirect URL. Copy the <strong>request_token</strong> from that URL and paste here:</p>
+          <div class="form-grid" style="margin-bottom:12px">
+            <div class="form-row">
+              <label class="form-label">request_token</label>
+              <input class="form-input" id="reqToken" type="text" placeholder="Paste request_token here"/>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="generateSession()">Authenticate &amp; Start →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+ 
+  <!-- ══ DASHBOARD ══ -->
+  <div id="dashboard">
+ 
+    <!-- P&L Card -->
+    <div class="card">
+      <div class="card-head">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="card-head-title">Today's P&amp;L</span>
+          <span id="pnlBadge" class="badge" style="display:none"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--text-muted)" id="lastUpdated"></span>
+          <div class="dot" id="cardDot"></div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="pnl-fig neu" id="pnlFig">₹0.00</div>
+        <div class="pnl-sub" id="pnlSub">Realised ₹0  ·  Unrealised ₹0</div>
+        <div class="prog-wrap">
+          <div class="prog-meta">
+            <span>₹0</span>
+            <span id="progPct">0% of daily limit</span>
+            <span id="progLimit">Limit: ₹10,000</span>
+          </div>
+          <div class="prog-track">
+            <div class="prog-fill" id="progFill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+ 
+    <!-- Tiles -->
+    <div class="tiles">
+      <div class="tile">
+        <div class="tile-lbl">Realised P&amp;L</div>
+        <div class="tile-val neu" id="tileReal">₹0.00</div>
+      </div>
+      <div class="tile">
+        <div class="tile-lbl">Unrealised P&amp;L</div>
+        <div class="tile-val neu" id="tileUnreal">₹0.00</div>
+      </div>
+      <div class="tile">
+        <div class="tile-lbl">Open Positions</div>
+        <div class="tile-val neu" id="tilePos">0</div>
+      </div>
+    </div>
+ 
+    <!-- Positions -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-head-title">Positions</span>
+        <span class="badge badge-grey" id="posBadge">0 open</span>
+      </div>
+      <div id="posBody">
+        <div class="empty">No open positions</div>
+      </div>
+    </div>
+ 
+    <!-- Controls -->
+    <div class="ctrl-row">
+      <button class="btn btn-secondary" id="pauseBtn" onclick="togglePause()">Pause Monitoring</button>
+      <button class="btn btn-danger"    onclick="manualKill()">Force Kill Switch</button>
+      <button class="btn btn-ghost"     onclick="logout()">Disconnect</button>
+    </div>
+ 
+    <!-- Log -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-head-title">Activity Log</span>
+      </div>
+      <div class="log-inner" id="logInner"></div>
+    </div>
+ 
+  </div>
+ 
+</div><!-- /page -->
+ 
+<script>
+const KITE  = 'https://api.kite.trade';
+const LOGIN = 'https://kite.zerodha.com/connect/login';
+ 
+let S = {
+  apiKey:'', apiSecret:'', accessToken:'',
+  limit:10000, mins:2,
+  killed:false, killDate:null,
+  paused:false,
+  timer:null, cdTimer:null
+};
+ 
+function load() {
+  try { const d = localStorage.getItem('zks4'); if(d) Object.assign(S, JSON.parse(d)); } catch(e){}
+}
+function save() {
+  try {
+    localStorage.setItem('zks4', JSON.stringify({
+      apiKey:S.apiKey, apiSecret:S.apiSecret, accessToken:S.accessToken,
+      limit:S.limit, mins:S.mins, killed:S.killed, killDate:S.killDate
+    }));
+  } catch(e){}
+}
+ 
+function log(msg, type='info') {
+  const box = document.getElementById('logInner');
+  const el  = document.createElement('div');
+  el.className = 'log-line';
+  const ts = new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  el.innerHTML = `<span class="log-ts">${ts}</span><span class="log-${type}">${msg}</span>`;
+  box.prepend(el);
+  if(box.children.length > 80) box.removeChild(box.lastChild);
+}
+ 
+function fmt(v) {
+  const abs = '₹' + Math.abs(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return (v >= 0 ? '+' : '−') + abs;
+}
+ 
+function setDots(state) {
+  const cls = {idle:'',live:'live',killed:'killed',paused:'paused'};
+  ['navDot','cardDot'].forEach(id => {
+    document.getElementById(id).className = 'dot ' + (cls[state]||'');
+  });
+  const lbl = {idle:'Not connected',live:'Live',killed:'Killed — Trading blocked',paused:'Paused'};
+  document.getElementById('navStatus').textContent = lbl[state]||'';
+}
+ 
+/* ── LOGIN ── */
+function startLogin() {
+  const key    = document.getElementById('apiKey').value.trim();
+  const secret = document.getElementById('apiSecret').value.trim();
+  const limit  = parseInt(document.getElementById('lossLimit').value)||10000;
+  const mins   = parseInt(document.getElementById('pollInterval').value)||2;
+  if(!key||!secret){ alert('Please enter both API Key and API Secret.'); return; }
+  Object.assign(S,{apiKey:key,apiSecret:secret,limit,mins});
+  const url = `${LOGIN}?api_key=${key}&v=3`;
+  document.getElementById('urlBox').innerHTML = `<a href="${url}" target="_blank">${url}</a>`;
+  document.getElementById('authWrap').classList.add('show');
+  document.getElementById('connectBtn').style.display = 'none';
+  log('Login URL generated — waiting for request_token','info');
+}
+ 
+async function generateSession() {
+  const tok = document.getElementById('reqToken').value.trim();
+  if(!tok){ alert('Please paste the request_token.'); return; }
+  log('Generating session token…','info');
+  try {
+    const ck = await sha256(S.apiKey + tok + S.apiSecret);
+    const r  = await fetch(`${KITE}/session/token`,{
+      method:'POST',
+      headers:{'X-Kite-Version':'3','Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({api_key:S.apiKey,request_token:tok,checksum:ck})
+    });
+    const d = await r.json();
+    if(d.status!=='success') throw new Error(d.message||'Auth failed');
+    S.accessToken = d.data.access_token;
+    save(); log('Authenticated successfully ✓','ok');
+    enterDashboard(); startPolling();
+  } catch(e) {
+    log('Auth error: '+e.message,'err');
+    alert('Authentication failed:\n'+e.message);
+  }
+}
+ 
+async function sha256(msg) {
+  const buf = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(msg));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+ 
+function enterDashboard() {
+  document.getElementById('setupPanel').style.display='none';
+  document.getElementById('dashboard').classList.add('show');
+  document.getElementById('navLogout').style.display='inline-flex';
+  document.getElementById('progLimit').textContent = 'Limit: ₹'+S.limit.toLocaleString('en-IN');
+  checkKillDate();
+}
+ 
+function checkKillDate() {
+  const today = new Date().toDateString();
+  if(S.killed && S.killDate===today){ activateKillUI(); }
+  else if(S.killed){ S.killed=false; S.killDate=null; save(); log('New trading day — kill switch reset','ok'); }
+}
+ 
+/* ── FETCH ── */
+async function fetchPnL() {
+  if(S.killed||S.paused) return;
+  try {
+    const r = await fetch(`${KITE}/portfolio/positions`,{
+      headers:{'X-Kite-Version':'3','Authorization':`token ${S.apiKey}:${S.accessToken}`}
+    });
+    const d = await r.json();
+    if(d.status!=='success') throw new Error(d.message);
+    processPnL(d.data); setDots('live');
+  } catch(e) { log('Fetch error: '+e.message,'err'); }
+}
+ 
+function processPnL(data) {
+  const all = [...(data.net||[])];
+  let real=0, unreal=0;
+  all.forEach(p=>{ real+=p.realised||0; unreal+=p.unrealised||0; });
+  const total = real+unreal;
+  renderUI(total,real,unreal,all);
+  if(total<=-Math.abs(S.limit)){ triggerKill(total); return; }
+  const pct = Math.abs(Math.min(total,0))/S.limit*100;
+  if(pct>=80) log(`⚠ ${pct.toFixed(0)}% of loss limit reached (${fmt(total)})`,'warn');
+  document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString('en-IN');
+}
+ 
+function renderUI(total,real,unreal,positions) {
+  const fig = document.getElementById('pnlFig');
+  fig.textContent = fmt(total);
+  fig.className = 'pnl-fig '+(total>0?'pos':total<0?'neg':'neu');
+  document.getElementById('pnlSub').textContent = `Realised ${fmt(real)}  ·  Unrealised ${fmt(unreal)}`;
+ 
+  const pct = Math.min(100,Math.abs(Math.min(total,0))/S.limit*100);
+  const fill = document.getElementById('progFill');
+  fill.style.width = pct+'%';
+  fill.style.background = pct<50?'var(--green)':pct<80?'var(--amber)':'var(--red)';
+  document.getElementById('progPct').textContent = pct.toFixed(1)+'% of daily limit';
+ 
+  const badge = document.getElementById('pnlBadge');
+  if(pct>=90){      badge.style.display='inline-flex'; badge.className='badge badge-red';   badge.textContent='Critical'; }
+  else if(pct>=70){ badge.style.display='inline-flex'; badge.className='badge badge-amber'; badge.textContent='Warning';  }
+  else { badge.style.display='none'; }
+ 
+  const setTile = (id,v) => {
+    const el=document.getElementById(id);
+    el.textContent=fmt(v);
+    el.className='tile-val '+(v>0?'pos':v<0?'neg':'neu');
+  };
+  setTile('tileReal',real); setTile('tileUnreal',unreal);
+  const open = positions.filter(p=>p.quantity!==0);
+  document.getElementById('tilePos').textContent = open.length;
+  document.getElementById('posBadge').textContent = open.length+' open';
+  renderPositions(open);
+}
+ 
+function renderPositions(pos) {
+  const body = document.getElementById('posBody');
+  if(!pos.length){ body.innerHTML='<div class="empty">No open positions</div>'; return; }
+  const rows = pos.map(p=>{
+    const pnl  = p.unrealised||0;
+    const side = p.quantity>0?'BUY':'SELL';
+    const chip = p.quantity>0?'chip-b':'chip-s';
+    const vc   = pnl>=0?'ppos':'pneg';
+    return `<tr>
+      <td><span class="sym">${p.tradingsymbol}</span> <span class="exch">${p.exchange||''}</span></td>
+      <td><span class="chip ${chip}">${side}</span></td>
+      <td class="r">${Math.abs(p.quantity)}</td>
+      <td class="r">${p.average_price?'₹'+parseFloat(p.average_price).toFixed(2):'—'}</td>
+      <td class="r"><span class="pval ${vc}">${fmt(pnl)}</span></td>
+    </tr>`;
+  }).join('');
+  body.innerHTML = `<table class="kite-tbl">
+    <thead><tr><th>Symbol</th><th>Product</th><th class="r">Qty</th><th class="r">Avg</th><th class="r">P&amp;L</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+ 
+/* ── KILL ── */
+async function triggerKill(pnl) {
+  S.killed=true; S.killDate=new Date().toDateString(); save();
+  log(`KILL SWITCH TRIGGERED — loss ${fmt(pnl)}`,'err');
+  await cancelOrders(); activateKillUI();
+}
+ 
+async function cancelOrders() {
+  try {
+    const r = await fetch(`${KITE}/orders`,{
+      headers:{'X-Kite-Version':'3','Authorization':`token ${S.apiKey}:${S.accessToken}`}
+    });
+    const d = await r.json();
+    if(d.status!=='success') return;
+    const open = (d.data||[]).filter(o=>['OPEN','TRIGGER PENDING'].includes(o.status));
+    for(const o of open){
+      await fetch(`${KITE}/orders/regular/${o.order_id}`,{
+        method:'DELETE',
+        headers:{'X-Kite-Version':'3','Authorization':`token ${S.apiKey}:${S.accessToken}`}
+      });
+      log(`Cancelled ${o.tradingsymbol} ${o.transaction_type}`,'warn');
+    }
+    log(open.length?`${open.length} order(s) cancelled`:'No open orders to cancel','warn');
+  } catch(e){ log('Cancel error: '+e.message,'err'); }
+}
+ 
+function activateKillUI() {
+  document.getElementById('killAlert').classList.add('show');
+  setDots('killed'); clearInterval(S.timer); startCountdown();
+}
+ 
+function startCountdown() {
+  const tick = () => {
+    const now=new Date(), next=new Date(now);
+    next.setHours(9,15,0,0);
+    if(now>=next) next.setDate(next.getDate()+1);
+    const d=next-now;
+    const h=Math.floor(d/3600000), m=Math.floor((d%3600000)/60000), s=Math.floor((d%60000)/1000);
+    document.getElementById('countdown').textContent =
+      String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+  };
+  tick(); S.cdTimer=setInterval(tick,1000);
+}
+ 
+/* ── CONTROLS ── */
+function togglePause() {
+  S.paused=!S.paused;
+  const btn=document.getElementById('pauseBtn');
+  btn.textContent = S.paused?'Resume Monitoring':'Pause Monitoring';
+  btn.className   = 'btn '+(S.paused?'btn-warning':'btn-secondary');
+  setDots(S.paused?'paused':'live');
+  log(S.paused?'Monitoring paused':'Monitoring resumed',S.paused?'warn':'ok');
+}
+ 
+function manualKill() {
+  if(confirm('Force activate kill switch?\n\nAll open orders will be cancelled and trading blocked for today.'))
+    triggerKill(S.limit);
+}
+ 
+function startPolling() {
+  log(`Monitoring started — checking every ${S.mins} min`,'ok');
+  fetchPnL();
+  S.timer=setInterval(fetchPnL,S.mins*60000);
+}
+ 
+function logout() {
+  clearInterval(S.timer); clearInterval(S.cdTimer);
+  localStorage.removeItem('zks4');
+  Object.assign(S,{apiKey:'',apiSecret:'',accessToken:'',killed:false,killDate:null,paused:false,timer:null,cdTimer:null});
+  document.getElementById('dashboard').classList.remove('show');
+  document.getElementById('setupPanel').style.display='block';
+  document.getElementById('killAlert').classList.remove('show');
+  document.getElementById('authWrap').classList.remove('show');
+  document.getElementById('connectBtn').style.display='inline-flex';
+  document.getElementById('reqToken').value='';
+  document.getElementById('navLogout').style.display='none';
+  document.getElementById('pauseBtn').className='btn btn-secondary';
+  document.getElementById('pauseBtn').textContent='Pause Monitoring';
+  setDots('idle');
+  log('Disconnected','info');
+}
+ 
+/* ── DEMO ── */
+function demoMode() {
+  S.apiKey='demo'; S.accessToken='demo';
+  S.limit=parseInt(document.getElementById('lossLimit').value)||10000;
+  S.mins =parseInt(document.getElementById('pollInterval').value)||2;
+  enterDashboard(); setDots('live');
+  log('Demo mode active — simulating live P&L','warn');
+ 
+  const syms=[
+    {tradingsymbol:'NIFTY24JAN22000CE',exchange:'NFO',quantity:-50,average_price:118},
+    {tradingsymbol:'RELIANCE',exchange:'NSE',quantity:10,average_price:2854},
+    {tradingsymbol:'HDFCBANK',exchange:'NSE',quantity:5,average_price:1622},
+  ];
+  let pnl=0;
+  const tick=()=>{
+    pnl+=(Math.random()-.56)*1100;
+    const r=pnl*.6, u=pnl*.4;
+    const pos=syms.map(s=>({...s,realised:r/syms.length,unrealised:u/syms.length}));
+    renderUI(pnl,r,u,pos);
+    document.getElementById('lastUpdated').textContent=new Date().toLocaleTimeString('en-IN');
+    if(pnl<=-S.limit){ clearInterval(dt); triggerKill(pnl); }
+  };
+  tick();
+  const dt=setInterval(tick,2500);
+  S.timer=dt;
+}
+ 
+/* ── INIT ── */
+window.addEventListener('DOMContentLoaded',()=>{
+  load();
+  log('Kill Switch ready — awaiting connection','info');
+  if(S.accessToken && S.accessToken!=='demo'){
+    document.getElementById('apiKey').value=S.apiKey;
+    document.getElementById('lossLimit').value=S.limit;
+    document.getElementById('pollInterval').value=S.mins;
+    enterDashboard(); startPolling();
+  }
+});
+</script>
+</body>
+</html>
