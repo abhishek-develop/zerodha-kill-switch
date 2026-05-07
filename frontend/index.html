@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zerodha Kill Switch Guard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-kicker">Risk Engine</div>
+        <div class="brand-title">Kill Switch Guard</div>
+      </div>
+      <nav class="kite-nav" aria-label="Dashboard sections">
+        <a href="#">Dashboard</a>
+        <a href="#">Orders</a>
+        <a href="#">Positions</a>
+        <a href="#">Holdings</a>
+        <a href="#">Funds</a>
+        <a class="active" href="#">Risk</a>
+      </nav>
+      <div class="topbar-right">
+        <div class="status-pill" id="connectionPill">Disconnected</div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="panel setup-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Connect Kite</h2>
+            <p>Authenticate once each trading day. Your API secret stays on the backend.</p>
+          </div>
+          <button class="ghost-btn" id="loginBtn" type="button">Login with Kite</button>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            Max loss
+            <input id="maxLoss" type="number" min="1" step="100" value="10000" />
+          </label>
+          <label>
+            P&L poll
+            <select id="pnlPollMs">
+              <option value="3000">3 sec</option>
+              <option value="5000" selected>5 sec</option>
+              <option value="10000">10 sec</option>
+            </select>
+          </label>
+          <label>
+            Guard poll
+            <select id="guardPollMs">
+              <option value="1000">1 sec</option>
+              <option value="1500" selected>1.5 sec</option>
+              <option value="3000">3 sec</option>
+            </select>
+          </label>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label>
+            Request token
+            <input id="requestToken" autocomplete="off" placeholder="Auto-filled after Kite login, or paste manually" />
+          </label>
+        </details>
+
+        <div class="actions-row">
+          <button class="primary-btn" id="connectBtn" type="button">Connect & Start</button>
+          <button class="danger-btn" id="manualKillBtn" type="button">Manual Kill</button>
+          <button class="secondary-btn" id="stopBtn" type="button">Stop Monitoring</button>
+        </div>
+      </section>
+
+      <section class="metrics-grid">
+        <article class="metric">
+          <span>Total P&L</span>
+          <strong id="totalPnl">--</strong>
+          <small id="lastUpdated">Not updated</small>
+        </article>
+        <article class="metric">
+          <span>Realised</span>
+          <strong id="realisedPnl">--</strong>
+          <small>From net positions</small>
+        </article>
+        <article class="metric">
+          <span>Unrealised</span>
+          <strong id="unrealisedPnl">--</strong>
+          <small>From net positions</small>
+        </article>
+        <article class="metric kill-metric" id="killMetric">
+          <span>Kill State</span>
+          <strong id="killState">Inactive</strong>
+          <small id="killReason">Guard ready</small>
+        </article>
+      </section>
+
+      <section class="split">
+        <article class="panel">
+          <div class="panel-head compact">
+            <h2>Open Positions</h2>
+            <span id="positionCount">0</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Product</th>
+                  <th class="right">Qty</th>
+                  <th class="right">P&L</th>
+                </tr>
+              </thead>
+              <tbody id="positionsBody"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head compact">
+            <h2>Recent Orders</h2>
+            <span id="orderCount">0</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Side</th>
+                  <th>Status</th>
+                  <th class="right">Qty</th>
+                </tr>
+              </thead>
+              <tbody id="ordersBody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head compact">
+          <h2>Action Log</h2>
+          <button class="secondary-btn small" id="refreshBtn" type="button">Refresh</button>
+        </div>
+        <div class="log-list" id="logList"></div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: zerodha-kill-switch
+    env: node
+    plan: free
+    buildCommand: ""
+    startCommand: "node backend/server.js"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: KITE_API_KEY
+        sync: false
+      - key: KITE_API_SECRET
+        sync: false
+      - key: KITE_REDIRECT_URL
+        sync: false
+      - key: APP_ORIGIN
+        sync: false
+      - key: MAX_LOSS
+        value: "10000"
+      - key: PNL_POLL_MS
+        value: "5000"
+      - key: GUARD_POLL_MS
+        value: "1500"
+      - key: MARKET_PROTECTION
+        value: "5"
+      - key: FLATTEN_PRODUCTS
+        value: "MIS,NRML"
+      - key: STATE_FILE
+        value: ".data/state.json"

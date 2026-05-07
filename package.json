@@ -1,0 +1,14 @@
+{
+  "name": "zerodha-kill-switch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node backend/server.js",
+    "start": "node backend/server.js",
+    "check": "node --check backend/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
