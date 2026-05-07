@@ -127,6 +127,18 @@ async function handleApi(req, res) {
     return sendJson(res, 200, publicState());
   }
 
+  if (req.method === "POST" && url.pathname === "/api/session/logout") {
+    stopLoops();
+    state.session = null;
+    state.monitoring = false;
+    state.positions = [];
+    state.orders = [];
+    state.pnl = { total: 0, realised: 0, unrealised: 0, updatedAt: null };
+    saveState();
+    logAction("SESSION", "Logged out");
+    return sendJson(res, 200, publicState());
+  }
+
   if (req.method === "GET" && url.pathname === "/api/status") {
     return sendJson(res, 200, publicState());
   }

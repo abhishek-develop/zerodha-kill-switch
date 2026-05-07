@@ -295,15 +295,49 @@ button:disabled {
   background: #fff4f3;
 }
 
+.login-btn {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.login-btn:hover {
+  background: var(--blue-dark);
+  border-color: var(--blue-dark);
+}
+
+.logout-btn {
+  background: #fff;
+  border-color: #e8b7b4;
+  color: var(--red);
+}
+
+.logout-btn:hover {
+  background: #fff4f3;
+}
+
 .small {
   padding: 6px 10px;
   font-size: 12px;
 }
 
+.settings-details {
+  margin-top: 6px;
+}
+
+.settings-details > summary {
+  width: max-content;
+  cursor: pointer;
+  color: #444;
+  font-size: 13px;
+  font-weight: 900;
+  margin-bottom: 12px;
+}
+
 .metrics-grid {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 

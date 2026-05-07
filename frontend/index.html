@@ -35,38 +35,41 @@
             <h2>Connect Kite</h2>
             <p>Authenticate once each trading day. Your API secret stays on the backend.</p>
           </div>
-          <button class="ghost-btn" id="loginBtn" type="button">Login with Kite</button>
+          <button class="login-btn" id="loginBtn" type="button">Login with Kite</button>
         </div>
 
-        <div class="form-grid">
-          <label>
-            Max loss
-            <input id="maxLoss" type="number" min="1" step="100" value="10000" />
-          </label>
-          <label>
-            P&L poll
-            <select id="pnlPollMs">
-              <option value="3000">3 sec</option>
-              <option value="5000" selected>5 sec</option>
-              <option value="10000">10 sec</option>
-            </select>
-          </label>
-          <label>
-            Guard poll
-            <select id="guardPollMs">
-              <option value="1000">1 sec</option>
-              <option value="1500" selected>1.5 sec</option>
-              <option value="3000">3 sec</option>
-            </select>
-          </label>
-        </div>
+        <details class="settings-details" id="settingsDetails" open>
+          <summary>Risk Settings</summary>
+          <div class="form-grid">
+            <label>
+              Max loss
+              <input id="maxLoss" type="number" min="1" step="100" value="10000" />
+            </label>
+            <label>
+              P&L poll
+              <select id="pnlPollMs">
+                <option value="3000">3 sec</option>
+                <option value="5000" selected>5 sec</option>
+                <option value="10000">10 sec</option>
+              </select>
+            </label>
+            <label>
+              Guard poll
+              <select id="guardPollMs">
+                <option value="1000">1 sec</option>
+                <option value="1500" selected>1.5 sec</option>
+                <option value="3000">3 sec</option>
+              </select>
+            </label>
+          </div>
 
-        <details class="advanced">
-          <summary>Advanced</summary>
-          <label>
-            Request token
-            <input id="requestToken" autocomplete="off" placeholder="Auto-filled after Kite login, or paste manually" />
-          </label>
+          <details class="advanced">
+            <summary>Advanced</summary>
+            <label>
+              Request token
+              <input id="requestToken" autocomplete="off" placeholder="Auto-filled after Kite login, or paste manually" />
+            </label>
+          </details>
         </details>
 
         <div class="actions-row">
@@ -92,6 +95,11 @@
           <span>Unrealised</span>
           <strong id="unrealisedPnl">--</strong>
           <small>From net positions</small>
+        </article>
+        <article class="metric">
+          <span>Risk Limit</span>
+          <strong id="riskLimit">--</strong>
+          <small id="riskLimitStatus">Max loss not saved</small>
         </article>
         <article class="metric kill-metric" id="killMetric">
           <span>Kill State</span>

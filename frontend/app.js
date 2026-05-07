@@ -3,6 +3,7 @@ const API_BASE = window.KILL_SWITCH_API_BASE || "";
 const els = {
   connectionPill: document.querySelector("#connectionPill"),
   loginBtn: document.querySelector("#loginBtn"),
+  settingsDetails: document.querySelector("#settingsDetails"),
   saveSettingsBtn: document.querySelector("#saveSettingsBtn"),
   connectBtn: document.querySelector("#connectBtn"),
   manualKillBtn: document.querySelector("#manualKillBtn"),
@@ -15,6 +16,8 @@ const els = {
   totalPnl: document.querySelector("#totalPnl"),
   realisedPnl: document.querySelector("#realisedPnl"),
   unrealisedPnl: document.querySelector("#unrealisedPnl"),
+  riskLimit: document.querySelector("#riskLimit"),
+  riskLimitStatus: document.querySelector("#riskLimitStatus"),
   lastUpdated: document.querySelector("#lastUpdated"),
   killMetric: document.querySelector("#killMetric"),
   killState: document.querySelector("#killState"),
@@ -52,6 +55,10 @@ refresh();
 setInterval(refresh, 2500);
 
 async function openLogin() {
+  if (els.loginBtn.dataset.mode === "logout") {
+    await logout();
+    return;
+  }
   if (window.location.protocol === "file:") {
     toast("Open http://localhost:3000 to use Kite login. The file page cannot call the backend API.");
     return;
@@ -60,7 +67,23 @@ async function openLogin() {
   window.location.href = data.loginUrl;
 }
 
+async function logout() {
+  const confirmed = window.confirm("Logout from this app and stop monitoring?");
+  if (!confirmed) return;
+  await withBusy(els.loginBtn, async () => {
+    const state = await api("/api/session/logout", { method: "POST" });
+    els.requestToken.value = "";
+    userEditingSettings = false;
+    render(state, { forceSettings: true });
+    toast("Logged out.");
+  });
+}
+
 async function connect() {
+  if (els.connectBtn.dataset.mode === "start") {
+    await startMonitoring();
+    return;
+  }
   const requestToken = els.requestToken.value.trim();
   if (!requestToken) return toast("Paste the request_token from the Zerodha redirect URL.");
   await withBusy(els.connectBtn, async () => {
@@ -74,6 +97,14 @@ async function connect() {
     userEditingSettings = false;
     render(state);
     toast("Connected. Monitoring is live.");
+  });
+}
+
+async function startMonitoring() {
+  await withBusy(els.connectBtn, async () => {
+    const state = await api("/api/monitor/start", { method: "POST" });
+    render(state);
+    toast("Monitoring started.");
   });
 }
 
@@ -140,10 +171,40 @@ function render(state, options = {}) {
     els.connectionPill.textContent = "Disconnected";
   }
 
+  if (state.connected) {
+    els.loginBtn.textContent = "Logout";
+    els.loginBtn.dataset.mode = "logout";
+    els.loginBtn.className = "logout-btn";
+    if (!options.keepSettingsOpen) els.settingsDetails.open = false;
+  } else {
+    els.loginBtn.textContent = "Login with Kite";
+    els.loginBtn.dataset.mode = "login";
+    els.loginBtn.className = "login-btn";
+    els.settingsDetails.open = true;
+  }
+
+  if (state.connected && state.monitoring) {
+    els.connectBtn.textContent = "Monitoring Live";
+    els.connectBtn.disabled = true;
+    els.connectBtn.dataset.mode = "live";
+  } else if (state.connected) {
+    els.connectBtn.textContent = "Start Monitoring";
+    els.connectBtn.disabled = false;
+    els.connectBtn.dataset.mode = "start";
+  } else {
+    els.connectBtn.textContent = "Connect & Start";
+    els.connectBtn.disabled = false;
+    els.connectBtn.dataset.mode = "connect";
+  }
+
   const pnl = state.pnl || {};
   setMoney(els.totalPnl, pnl.total);
   setMoney(els.realisedPnl, pnl.realised);
   setMoney(els.unrealisedPnl, pnl.unrealised);
+  setMoney(els.riskLimit, state.settings?.maxLoss);
+  els.riskLimitStatus.textContent = state.connected
+    ? `Active limit: ${formatMoney(state.settings?.maxLoss || 0)}`
+    : `Will use ${formatMoney(Number(els.maxLoss.value || state.settings?.maxLoss || 0))}`;
   els.lastUpdated.textContent = pnl.updatedAt ? `Updated ${formatTime(pnl.updatedAt)}` : "Not updated";
 
   els.killMetric.classList.toggle("active", Boolean(state.kill?.active));
