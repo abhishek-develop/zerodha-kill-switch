@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tradeguardian.guard</string>
+
+  <!-- Replace both absolute paths before installing this file. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/absolute/path/to/node</string>
+    <string>backend/server.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/zerodha-kill-switch</string>
+
+  <!-- backend/config.js loads .env from WorkingDirectory. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>3</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+
+  <key>StandardOutPath</key>
+  <string>/absolute/path/to/tradeguardian-logs/tradeguardian.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/absolute/path/to/tradeguardian-logs/tradeguardian.stderr.log</string>
+</dict>
+</plist>

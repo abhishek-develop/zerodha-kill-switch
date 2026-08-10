@@ -1,14 +1,50 @@
 {
-  "name": "zerodha-kill-switch",
+  "name": "tradeguardian",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node backend/server.js",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "next dev -p 3000",
+    "build": "next build",
     "start": "node backend/server.js",
-    "check": "node --check backend/server.js"
+    "lint": "eslint .",
+    "server": "node backend/server.js",
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/check.mjs"
+  },
+  "dependencies": {
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "@types/node": "^20.0.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.4",
+    "typescript": "5.9.3",
+    "tailwindcss": "3.4.19",
+    "autoprefixer": "10.5.4",
+    "postcss": "8.5.26",
+    "@radix-ui/react-alert-dialog": "^1.0.0",
+    "@radix-ui/react-dialog": "^1.0.0",
+    "@radix-ui/react-dropdown-menu": "^2.0.0",
+    "@radix-ui/react-progress": "^1.0.0",
+    "@radix-ui/react-select": "^2.0.0",
+    "@radix-ui/react-switch": "^1.0.0",
+    "@radix-ui/react-tabs": "^1.0.0",
+    "@radix-ui/react-toast": "^1.1.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.0.0",
+    "lucide-react": "1.31.0",
+    "recharts": "^2.8.0",
+    "tailwind-merge": "^2.0.0",
+    "tailwindcss-animate": "^1.0.0"
+  },
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9.0"
   }
 }

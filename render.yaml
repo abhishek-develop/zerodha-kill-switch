@@ -1,13 +1,31 @@
+# Live protection requires an always-on paid instance and durable state.
+# Render's Free plan is deliberately not used here: it sleeps and has no disk.
 services:
   - type: web
-    name: zerodha-kill-switch
-    env: node
-    plan: free
-    buildCommand: ""
-    startCommand: "node backend/server.js"
+    name: tradeguardian
+    runtime: node
+    plan: starter
+    region: singapore
+    autoDeployTrigger: "off"
+    numInstances: 1
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: tradeguardian-state
+      mountPath: /opt/render/project/src/.data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: STATE_FILE
+        value: /opt/render/project/src/.data/state.json
+      - key: APP_PASSWORD
+        sync: false
+      - key: APP_SECRET
+        sync: false
       - key: KITE_API_KEY
         sync: false
       - key: KITE_API_SECRET
@@ -16,15 +34,23 @@ services:
         sync: false
       - key: APP_ORIGIN
         sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: ALERT_WEBHOOK_URL
+        sync: false
       - key: MAX_LOSS
         value: "10000"
       - key: PNL_POLL_MS
-        value: "5000"
+        value: "2000"
       - key: GUARD_POLL_MS
-        value: "1500"
+        value: "1000"
       - key: MARKET_PROTECTION
-        value: "5"
+        value: "-1"
       - key: FLATTEN_PRODUCTS
-        value: "MIS,NRML"
-      - key: STATE_FILE
-        value: ".data/state.json"
+        value: ALL
+      - key: CANCEL_GTT_ON_KILL
+        value: "true"
+      - key: CHARGE_BUFFER
+        value: "0"

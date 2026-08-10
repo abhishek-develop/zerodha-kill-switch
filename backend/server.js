@@ -1,542 +1,566 @@
 import http from "node:http";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { extname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const rootDir = resolve(__dirname, "..");
-const frontendDir = join(rootDir, "frontend");
+import { AppAuthenticator, LoginRateLimiter } from "./auth.js";
+import { buildConfig, loadEnvFile, validateSettings } from "./config.js";
+import {
+  createFreshState,
+  GuardEngine,
+  GuardInvariantError,
+  normalizeState,
+} from "./guard-engine.js";
+import { KiteApiError, KiteClient } from "./kite-client.js";
+import { WebhookNotifier } from "./notifier.js";
+import { EncryptedStateStore } from "./state-store.js";
 
-loadEnv();
+const moduleDirectory = fileURLToPath(new URL(".", import.meta.url));
+const defaultRootDir = resolve(moduleDirectory, "..");
 
-const config = {
-  port: intEnv("PORT", 3000),
-  apiKey: mustEnv("KITE_API_KEY"),
-  apiSecret: mustEnv("KITE_API_SECRET"),
-  redirectUrl: process.env.KITE_REDIRECT_URL || `http://localhost:${process.env.PORT || 3000}/`,
-  appOrigin: process.env.APP_ORIGIN || "*",
-  stateFile: resolve(rootDir, process.env.STATE_FILE || ".data/state.json"),
-  kiteBase: process.env.KITE_BASE_URL || "https://api.kite.trade",
-  maxLoss: intEnv("MAX_LOSS", 10000),
-  pnlPollMs: intEnv("PNL_POLL_MS", 5000),
-  guardPollMs: intEnv("GUARD_POLL_MS", 1500),
-  marketProtection: Number(process.env.MARKET_PROTECTION || 5),
-  flattenProducts: new Set((process.env.FLATTEN_PRODUCTS || "MIS,NRML").split(",").map((s) => s.trim()).filter(Boolean)),
-};
+export async function createGuardApplication(options = {}) {
+  const rootDir = options.rootDir || defaultRootDir;
+  if (!options.config) loadEnvFile(rootDir);
+  const config = options.config || buildConfig(rootDir);
+  const logger = options.logger || console;
+  const now = options.now || (() => new Date());
+  const auth = new AppAuthenticator({
+    password: config.appPassword,
+    secret: config.appSecret,
+    cookieName: config.cookieName,
+    secure: config.cookieSecure,
+    ttlMs: config.authTtlMs,
+  });
+  const loginLimiter = new LoginRateLimiter();
 
-const OPEN_ORDER_STATUSES = new Set([
-  "OPEN",
-  "TRIGGER PENDING",
-  "OPEN PENDING",
-  "VALIDATION PENDING",
-  "PUT ORDER REQ RECEIVED",
-  "MODIFY VALIDATION PENDING",
-  "MODIFY PENDING",
-]);
+  let engine = options.engine || null;
+  let startupError = null;
+  if (!engine) {
+    const engineIssues = config.configurationIssues.filter(
+      (issue) => !issue.startsWith("APP_PASSWORD"),
+    );
+    if (!engineIssues.length) {
+      try {
+        const store = options.store || new EncryptedStateStore({
+          filePath: config.stateFile,
+          secret: config.appSecret,
+        });
+        const loaded = options.state || await store.load(() => createFreshState(config.defaults, now()));
+        const state = normalizeState(loaded, config.defaults, now());
+        state.settings = validateSettings(state.settings, config.defaults);
 
-const state = loadState();
-const runtime = {
-  pnlTimer: null,
-  guardTimer: null,
-  inFlightFlatten: new Map(),
-  lastError: null,
-};
+        let engineReference;
+        const client = options.client || new KiteClient({
+          apiKey: config.apiKey,
+          apiSecret: config.apiSecret,
+          baseUrl: config.kiteBase,
+          timeoutMs: config.requestTimeoutMs,
+          getAccessToken: () => engineReference?.state.session?.accessToken || null,
+          onTokenError: (error) => engineReference?.markTokenInvalid(error),
+        });
+        const notifier = options.notifier || new WebhookNotifier({
+          url: config.alertWebhookUrl,
+          timeoutMs: config.alertWebhookTimeoutMs,
+          now,
+        });
+        const candidateEngine = new GuardEngine({ state, store, client, notifier, config, now, logger });
+        engineReference = candidateEngine;
+        await candidateEngine.start();
+        engine = candidateEngine;
+      } catch (error) {
+        // Never expose a half-started engine as configured. In particular, a
+        // failed initial state write means no protection loop was scheduled.
+        engine = null;
+        startupError = error;
+        logger.error?.(`[STARTUP_ERROR] ${error.message}`);
+      }
+    } else {
+      startupError = new Error(engineIssues.join("; "));
+    }
+  }
 
-function freshState() {
+  const staticDirectory = selectStaticDirectory(rootDir);
+  const context = {
+    auth,
+    config,
+    engine,
+    loginLimiter,
+    logger,
+    now,
+    startupError,
+    staticDirectory,
+  };
+
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res, context).catch((error) => {
+      logger.error?.(`[HTTP_ERROR] ${error.message}`);
+      if (!res.headersSent) {
+        sendError(req, res, error, context);
+      } else {
+        res.destroy();
+      }
+    });
+  });
+
+  server.on("clientError", (_error, socket) => {
+    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+  });
+
   return {
-    session: null,
-    monitoring: false,
-    settings: {
-      maxLoss: config.maxLoss,
-      pnlPollMs: config.pnlPollMs,
-      guardPollMs: config.guardPollMs,
-      marketProtection: config.marketProtection,
-      flattenProducts: [...config.flattenProducts],
+    server,
+    engine,
+    config,
+    startupError,
+    async listen(port = config.port, host = config.host) {
+      await new Promise((resolveListen, rejectListen) => {
+        const onError = (error) => {
+          server.off("listening", onListening);
+          rejectListen(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolveListen();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(port, host);
+      });
+      return server.address();
     },
-    kill: {
-      active: false,
-      date: null,
-      activatedAt: null,
-      reason: null,
+    async close() {
+      let closeError = null;
+      if (server.listening) {
+        try {
+          // Stop accepting control requests before draining the engine. The
+          // guard keeps running while any in-flight request completes.
+          await new Promise((resolveClose, rejectClose) => {
+            server.close((error) => (error ? rejectClose(error) : resolveClose()));
+          });
+        } catch (error) {
+          closeError = error;
+        }
+      }
+      try {
+        await engine?.shutdown();
+      } catch (error) {
+        closeError ||= error;
+      }
+      if (closeError) throw closeError;
     },
-    pnl: {
-      total: 0,
-      realised: 0,
-      unrealised: 0,
-      updatedAt: null,
-    },
-    positions: [],
-    orders: [],
-    actions: [],
   };
 }
 
-resetExpiredKillState();
-if (state.monitoring && state.session?.accessToken) {
-  startLoops();
-}
-
-const server = http.createServer(async (req, res) => {
-  try {
-    if (req.method === "OPTIONS") return sendNoContent(res);
-    if (req.url.startsWith("/api/")) return handleApi(req, res);
-    return serveStatic(req, res);
-  } catch (error) {
-    logAction("ERROR", error.message);
-    return sendJson(res, 500, { error: error.message });
+async function handleRequest(req, res, context) {
+  applySecurityHeaders(res);
+  applyCors(req, res, context.config);
+  if (req.method === "OPTIONS") {
+    ensureAllowedOrigin(req, context.config);
+    res.writeHead(204);
+    res.end();
+    return;
   }
-});
 
-server.listen(config.port, () => {
-  console.log(`Kill Switch Guard running on http://localhost:${config.port}`);
-});
-
-async function handleApi(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const body = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) ? await readJson(req) : {};
+  const url = requestUrl(req);
+  if (!url.pathname.startsWith("/api/")) {
+    return serveStatic(req, res, url, context.staticDirectory);
+  }
 
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return sendJson(res, 200, { ok: true, monitoring: state.monitoring, killActive: state.kill.active });
+    return sendJson(req, res, 200, liveness(context));
+  }
+  if (req.method === "GET" && url.pathname === "/api/readiness") {
+    const readiness = protectionReadiness(context.engine, context.now());
+    return sendJson(req, res, readiness.ready ? 200 : 503, readiness);
+  }
+  if (req.method === "GET" && url.pathname === "/api/auth/status") {
+    return sendJson(req, res, 200, {
+      authenticated: context.auth.isAuthenticated(req, context.now()),
+      configured: context.auth.configured && Boolean(context.engine),
+      configurationIssues: context.config.configurationIssues,
+      startupError: context.startupError?.message || null,
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    ensureAllowedOrigin(req, context.config);
+    if (!context.auth.configured) throw httpError(503, "Application authentication is not configured");
+    const key = clientAddress(req, context.config);
+    const limit = context.loginLimiter.check(key);
+    if (!limit.allowed) {
+      res.setHeader("Retry-After", String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))));
+      throw httpError(429, "Too many login attempts; try again later");
+    }
+    const body = await readJson(req);
+    if (!context.auth.verifyPassword(body.password)) {
+      context.loginLimiter.fail(key);
+      throw httpError(401, "Invalid application password");
+    }
+    context.loginLimiter.clear(key);
+    res.setHeader("Set-Cookie", context.auth.issueCookie(context.now()));
+    return sendJson(req, res, 200, { authenticated: true });
   }
 
+  requireAppAuthentication(req, context);
+  if (isMutation(req.method)) ensureAllowedOrigin(req, context.config);
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    res.setHeader("Set-Cookie", context.auth.clearCookie());
+    return sendJson(req, res, 200, { authenticated: false, protectionContinues: Boolean(context.engine?.state.kill.active) });
+  }
+
+  const engine = requireEngine(context);
   if (req.method === "GET" && url.pathname === "/api/login-url") {
-    const loginUrl = `https://kite.zerodha.com/connect/login?v=3&api_key=${encodeURIComponent(config.apiKey)}`;
-    return sendJson(res, 200, { loginUrl, redirectUrl: config.redirectUrl });
+    return sendJson(req, res, 200, {
+      loginUrl: engine.client.getLoginUrl(),
+      redirectUrl: context.config.redirectUrl,
+    });
   }
-
   if (req.method === "POST" && url.pathname === "/api/session") {
-    assertBody(body, ["requestToken"]);
-    const session = await generateSession(body.requestToken);
-    state.session = {
-      accessToken: session.access_token,
-      publicToken: session.public_token,
-      userId: session.user_id,
-      userName: session.user_name,
-      loginAt: new Date().toISOString(),
-    };
-    if (body.maxLoss) state.settings.maxLoss = Math.abs(Number(body.maxLoss));
-    if (body.pnlPollMs) state.settings.pnlPollMs = Math.max(1000, Number(body.pnlPollMs));
-    if (body.guardPollMs) state.settings.guardPollMs = Math.max(750, Number(body.guardPollMs));
-    state.monitoring = true;
-    resetExpiredKillState();
-    saveState();
-    startLoops();
-    await refreshRiskSnapshot();
-    logAction("SESSION", `Connected as ${state.session.userName || state.session.userId || "Kite user"}`);
-    return sendJson(res, 200, publicState());
+    const body = await readJson(req);
+    if (typeof body.requestToken !== "string" || !body.requestToken.trim()) {
+      throw httpError(400, "requestToken is required");
+    }
+    const session = await engine.client.generateSession(body.requestToken.trim());
+    await engine.connectSession(session);
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
   if (req.method === "POST" && url.pathname === "/api/session/logout") {
-    stopLoops();
-    state.session = null;
-    state.monitoring = false;
-    state.positions = [];
-    state.orders = [];
-    state.pnl = { total: 0, realised: 0, unrealised: 0, updatedAt: null };
-    saveState();
-    logAction("SESSION", "Logged out");
-    return sendJson(res, 200, publicState());
+    await engine.disconnectSession();
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
   if (req.method === "GET" && url.pathname === "/api/status") {
-    return sendJson(res, 200, publicState());
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
   if (req.method === "POST" && url.pathname === "/api/settings") {
-    if (body.maxLoss) state.settings.maxLoss = Math.abs(Number(body.maxLoss));
-    if (body.pnlPollMs) state.settings.pnlPollMs = Math.max(1000, Number(body.pnlPollMs));
-    if (body.guardPollMs) state.settings.guardPollMs = Math.max(750, Number(body.guardPollMs));
-    if (Array.isArray(body.flattenProducts)) state.settings.flattenProducts = body.flattenProducts;
-    saveState();
-    if (state.monitoring) startLoops();
-    logAction("SETTINGS", "Risk settings updated");
-    return sendJson(res, 200, publicState());
+    const body = await readJson(req);
+    const settings = validateSettings(body, engine.state.settings);
+    await engine.updateSettings(settings);
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
   if (req.method === "POST" && url.pathname === "/api/monitor/start") {
-    requireSession();
-    state.monitoring = true;
-    saveState();
-    startLoops();
-    await refreshRiskSnapshot();
-    logAction("MONITOR", "Monitoring started");
-    return sendJson(res, 200, publicState());
+    await engine.startMonitoring();
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
   if (req.method === "POST" && url.pathname === "/api/monitor/stop") {
-    state.monitoring = false;
-    stopLoops();
-    saveState();
-    logAction("MONITOR", "Monitoring stopped");
-    return sendJson(res, 200, publicState());
+    await engine.stopMonitoring();
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
   if (req.method === "POST" && url.pathname === "/api/kill/activate") {
-    requireSession();
-    await activateKill(body.reason || "Manual kill activation");
-    return sendJson(res, 200, publicState());
+    const body = await readJson(req);
+    await engine.manualKill(
+      typeof body.reason === "string" && body.reason.trim()
+        ? body.reason.trim().slice(0, 300)
+        : "Manual reactive lock activation",
+    );
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
-
+  if (req.method === "POST" && url.pathname === "/api/kill/arm-next-day") {
+    await engine.armNextDay();
+    return sendJson(req, res, 200, publicState(engine, context.now()));
+  }
   if (req.method === "POST" && url.pathname === "/api/kill/reset") {
-    state.kill = { active: false, date: null, activatedAt: null, reason: null };
-    saveState();
-    logAction("KILL", "Kill state reset manually");
-    return sendJson(res, 200, publicState());
+    throw new GuardInvariantError("Same-day kill reset has been removed; use next-day arming after the account is verified flat", {
+      code: "RESET_REMOVED",
+      status: 423,
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/snapshot/refresh") {
+    await engine.refreshSnapshot();
+    return sendJson(req, res, 200, publicState(engine, context.now()));
   }
 
-  return sendJson(res, 404, { error: "Not found" });
+  throw httpError(404, "API endpoint not found");
 }
 
-async function generateSession(requestToken) {
-  const checksum = createHash("sha256")
-    .update(config.apiKey + requestToken + config.apiSecret)
-    .digest("hex");
-
-  const data = await kiteRequest("/session/token", {
-    method: "POST",
-    auth: false,
-    params: {
-      api_key: config.apiKey,
-      request_token: requestToken,
-      checksum,
+function publicState(engine, now) {
+  const state = engine.state;
+  const readiness = protectionReadiness(engine, now);
+  return {
+    lockMode: "REACTIVE_POSITION_LOCK",
+    connected: engine.hasUsableSession(),
+    user: state.session
+      ? {
+          userId: state.session.userId,
+          userName: state.session.userName,
+          loginAt: state.session.loginAt,
+          invalid: Boolean(state.session.invalid),
+        }
+      : null,
+    monitoring: state.monitoring,
+    day: state.day,
+    kill: {
+      active: state.kill.active,
+      date: state.kill.date,
+      activatedAt: state.kill.activatedAt,
+      reason: state.kill.reason,
+      phase: state.kill.phase,
+      verifiedFlat: state.kill.verifiedFlat,
+      flatVerifiedAt: state.kill.flatVerifiedAt,
+      lastReconciledAt: state.kill.lastReconciledAt,
+      unresolvedExposureCount: state.kill.unresolvedExposureCount,
+      canArmNextDay:
+        engine.hasUsableSession() &&
+        state.kill.active &&
+        state.kill.date !== tradingDate(now) &&
+        state.kill.verifiedFlat,
     },
-  });
-  return data;
-}
-
-async function refreshRiskSnapshot() {
-  requireSession();
-  const positions = await kiteRequest("/portfolio/positions");
-  const net = positions.net || [];
-  const realised = sum(net.map((p) => Number(p.realised || 0)));
-  const unrealised = sum(net.map((p) => Number(p.unrealised || 0)));
-  const total = realised + unrealised;
-  state.pnl = {
-    total,
-    realised,
-    unrealised,
-    updatedAt: new Date().toISOString(),
+    settings: state.settings,
+    pnl: state.pnl,
+    positions: state.positions,
+    orders: state.orders,
+    gtts: state.gtts,
+    actions: state.actions.slice(-120).reverse(),
+    health: {
+      ...state.health,
+      ready: readiness.ready,
+      freshnessMs: readiness.freshnessMs,
+    },
   };
-  state.positions = net
-    .filter((p) => Number(p.quantity || 0) !== 0)
-    .map((p) => ({
-      exchange: p.exchange,
-      tradingsymbol: p.tradingsymbol,
-      product: p.product,
-      quantity: Number(p.quantity || 0),
-      realised: Number(p.realised || 0),
-      unrealised: Number(p.unrealised || 0),
-    }));
+}
 
-  const orders = await kiteRequest("/orders");
-  state.orders = (orders || []).slice(-25).map((o) => ({
-    order_id: o.order_id,
-    exchange: o.exchange,
-    tradingsymbol: o.tradingsymbol,
-    transaction_type: o.transaction_type,
-    quantity: o.quantity,
-    filled_quantity: o.filled_quantity,
-    pending_quantity: o.pending_quantity,
-    status: o.status,
-    product: o.product,
-    variety: o.variety,
-    order_timestamp: o.order_timestamp,
-  }));
+function liveness(context) {
+  const readiness = protectionReadiness(context.engine, context.now());
+  const phase = context.engine?.state.kill.phase || "NOT_CONFIGURED";
+  return {
+    ok: true,
+    process: "UP",
+    configured: Boolean(context.engine),
+    authConfigured: context.auth.configured,
+    startupError: context.startupError?.message || null,
+    configurationIssues: context.config.configurationIssues,
+    protection: readiness.ready ? phase : "UNAVAILABLE",
+    protectionReady: readiness.ready,
+    phase,
+  };
+}
 
-  saveState();
-  if (!state.kill.active && total <= -Math.abs(Number(state.settings.maxLoss))) {
-    await activateKill(`Max loss breached: ${formatCurrency(total)} <= -${formatCurrency(state.settings.maxLoss)}`);
+function protectionReadiness(engine, now) {
+  if (!engine) return { ready: false, reason: "Guard engine is not configured", freshnessMs: null };
+  const state = engine.state;
+  const timestamp = state.kill.active ? state.health.lastGuardCheckAt : state.health.lastRiskCheckAt;
+  const freshnessMs = timestamp ? Math.max(0, now.getTime() - new Date(timestamp).getTime()) : null;
+  const maximumAge = state.kill.active
+    ? Math.max(10_000, state.settings.guardPollMs * 5)
+    : Math.max(15_000, state.settings.riskPollMs * 5);
+  const ready =
+    engine.hasUsableSession() &&
+    (state.monitoring || state.kill.active) &&
+    state.health.status === "HEALTHY" &&
+    freshnessMs !== null &&
+    freshnessMs <= maximumAge;
+  return {
+    ready,
+    reason: ready
+      ? "Protection loop is current"
+      : state.health.lastError || (!engine.hasUsableSession()
+        ? "Kite session is disconnected"
+        : state.health.status !== "HEALTHY"
+          ? `Protection health is ${state.health.status}`
+          : "Protection loop is stale"),
+    freshnessMs,
+    status: state.health.status,
+    phase: state.kill.phase,
+  };
+}
+
+function requireAppAuthentication(req, context) {
+  if (!context.auth.configured) throw httpError(503, "Application authentication is not configured");
+  if (!context.auth.isAuthenticated(req, context.now())) throw httpError(401, "Application login required");
+}
+
+function requireEngine(context) {
+  if (!context.engine) {
+    throw httpError(503, context.startupError?.message || "Guard engine is not configured");
   }
+  return context.engine;
 }
 
-async function enforceKill() {
-  if (!state.kill.active) return;
-  requireSession();
-  await cancelOpenOrders();
-  await flattenOpenPositions();
-  saveState();
+function ensureAllowedOrigin(req, config) {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  if (!isAllowedOrigin(req, origin, config)) throw httpError(403, "Request origin is not allowed");
 }
 
-async function activateKill(reason) {
-  if (!state.kill.active) {
-    state.kill = {
-      active: true,
-      date: todayKey(),
-      activatedAt: new Date().toISOString(),
-      reason,
-    };
-    logAction("KILL", reason);
-  }
-  state.monitoring = true;
-  saveState();
-  startLoops();
-  await cancelOpenOrders();
-  await flattenOpenPositions();
+function applyCors(req, res, config) {
+  const origin = req.headers.origin;
+  if (!origin || !isAllowedOrigin(req, origin, config)) return;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-async function cancelOpenOrders() {
-  const orders = await kiteRequest("/orders");
-  const cancellable = (orders || []).filter((order) => OPEN_ORDER_STATUSES.has(order.status));
-  for (const order of cancellable) {
-    try {
-      const params = order.parent_order_id ? { parent_order_id: order.parent_order_id } : undefined;
-      await kiteRequest(`/orders/${order.variety || "regular"}/${order.order_id}`, {
-        method: "DELETE",
-        params,
-      });
-      logAction("CANCEL", `${order.tradingsymbol} ${order.transaction_type} ${order.pending_quantity || order.quantity}`);
-    } catch (error) {
-      logAction("CANCEL_ERROR", `${order.order_id}: ${error.message}`);
-    }
-  }
+function isAllowedOrigin(req, origin, config) {
+  const normalized = String(origin).replace(/\/$/, "");
+  if (config.appOrigins.includes(normalized)) return true;
+  const forwardedProtocol = config.trustProxy ? req.headers["x-forwarded-proto"] : null;
+  const protocol = String(forwardedProtocol || (req.socket.encrypted ? "https" : "http"))
+    .split(",")[0]
+    .trim();
+  return normalized === `${protocol}://${req.headers.host}`;
 }
 
-async function flattenOpenPositions() {
-  const positions = await kiteRequest("/portfolio/positions");
-  const allowedProducts = new Set(state.settings.flattenProducts || []);
-  const openPositions = (positions.net || []).filter((position) => {
-    const qty = Number(position.quantity || 0);
-    return qty !== 0 && allowedProducts.has(position.product);
-  });
-
-  for (const position of openPositions) {
-    const qty = Math.abs(Number(position.quantity || 0));
-    const key = `${position.exchange}:${position.tradingsymbol}:${position.product}:${Math.sign(position.quantity)}`;
-    const lastAttempt = runtime.inFlightFlatten.get(key) || 0;
-    if (Date.now() - lastAttempt < 15000) continue;
-    runtime.inFlightFlatten.set(key, Date.now());
-
-    const transactionType = Number(position.quantity) > 0 ? "SELL" : "BUY";
-    try {
-      await kiteRequest("/orders/regular", {
-        method: "POST",
-        params: {
-          exchange: position.exchange,
-          tradingsymbol: position.tradingsymbol,
-          transaction_type: transactionType,
-          quantity: qty,
-          product: position.product,
-          order_type: "MARKET",
-          validity: "DAY",
-          market_protection: state.settings.marketProtection,
-          tag: "KSGUARD",
-        },
-      });
-      logAction("FLATTEN", `${transactionType} ${qty} ${position.exchange}:${position.tradingsymbol} ${position.product}`);
-    } catch (error) {
-      logAction("FLATTEN_ERROR", `${position.tradingsymbol}: ${error.message}`);
-    }
-  }
+function applySecurityHeaders(res) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader(
+    "Content-Security-Policy",
+    // Next's static export contains inline hydration bootstraps. Because this
+    // server does not rewrite HTML per request, nonces are not available.
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://kite.zerodha.com",
+  );
+  res.setHeader("Cache-Control", "no-store");
 }
 
-async function kiteRequest(path, options = {}) {
-  const method = options.method || "GET";
-  const headers = { "X-Kite-Version": "3" };
-  if (options.auth !== false) {
-    requireSession();
-    headers.Authorization = `token ${config.apiKey}:${state.session.accessToken}`;
-  }
-
-  let url = `${config.kiteBase}${path}`;
-  const request = { method, headers };
-  if (options.params && method === "GET") {
-    url += `?${new URLSearchParams(cleanParams(options.params)).toString()}`;
-  } else if (options.params) {
-    headers["Content-Type"] = "application/x-www-form-urlencoded";
-    request.body = new URLSearchParams(cleanParams(options.params)).toString();
-  }
-
-  const response = await fetch(url, request);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.status === "error") {
-    const message = payload.message || payload.error_type || `Kite API failed with HTTP ${response.status}`;
-    if (payload.error_type === "TokenException" || response.status === 403) {
-      state.monitoring = false;
-      stopLoops();
-      saveState();
-    }
-    throw new Error(message);
-  }
-  return payload.data;
-}
-
-function startLoops() {
-  stopLoops();
-  if (!state.monitoring || !state.session?.accessToken) return;
-  runtime.pnlTimer = setInterval(() => {
-    refreshRiskSnapshot().catch((error) => {
-      runtime.lastError = error.message;
-      logAction("PNL_ERROR", error.message);
-    });
-  }, Number(state.settings.pnlPollMs));
-  runtime.guardTimer = setInterval(() => {
-    enforceKill().catch((error) => {
-      runtime.lastError = error.message;
-      logAction("GUARD_ERROR", error.message);
-    });
-  }, Number(state.settings.guardPollMs));
-}
-
-function stopLoops() {
-  if (runtime.pnlTimer) clearInterval(runtime.pnlTimer);
-  if (runtime.guardTimer) clearInterval(runtime.guardTimer);
-  runtime.pnlTimer = null;
-  runtime.guardTimer = null;
-}
-
-function serveStatic(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+function serveStatic(req, res, url, staticDirectory) {
+  if (!staticDirectory || !["GET", "HEAD"].includes(req.method)) throw httpError(404, "Not found");
   const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-  const filePath = resolve(frontendDir, `.${pathname}`);
-  if (!filePath.startsWith(frontendDir) || !existsSync(filePath)) {
-    return sendJson(res, 404, { error: "Not found" });
+  const requested = resolve(staticDirectory, `.${pathname}`);
+  const relativePath = relative(staticDirectory, requested);
+  if (relativePath.startsWith("..") || isAbsolute(relativePath) || !existsSync(requested)) {
+    throw httpError(404, "Not found");
   }
-  const contentType = {
+  const type = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
-  }[extname(filePath)] || "application/octet-stream";
-  res.writeHead(200, { "Content-Type": contentType });
-  res.end(readFileSync(filePath));
-}
-
-function publicState() {
-  return {
-    connected: Boolean(state.session?.accessToken),
-    user: state.session ? { userId: state.session.userId, userName: state.session.userName, loginAt: state.session.loginAt } : null,
-    monitoring: state.monitoring,
-    kill: state.kill,
-    settings: state.settings,
-    pnl: state.pnl,
-    positions: state.positions,
-    orders: state.orders,
-    actions: state.actions.slice(-80).reverse(),
-    lastError: runtime.lastError,
-  };
-}
-
-function loadEnv() {
-  const envPath = join(rootDir, ".env");
-  if (!existsSync(envPath)) return;
-  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const index = trimmed.indexOf("=");
-    if (index === -1) continue;
-    const key = trimmed.slice(0, index).trim();
-    const value = trimmed.slice(index + 1).trim().replace(/^['"]|['"]$/g, "");
-    if (!(key in process.env)) process.env[key] = value;
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+  }[extname(requested)] || "application/octet-stream";
+  res.statusCode = 200;
+  res.setHeader("Content-Type", type);
+  if (requested.includes(`${join(staticDirectory, "_next")}`)) {
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   }
+  if (req.method === "HEAD") return res.end();
+  res.end(readFileSync(requested));
 }
 
-function loadState() {
+function selectStaticDirectory(rootDir) {
+  const nextExport = join(rootDir, "out");
+  if (existsSync(join(nextExport, "index.html"))) return nextExport;
+  // Never fall back to the retired prototype dashboard: its controls and
+  // status model do not represent the live guard. The API remains available
+  // so an already-running protection loop is not coupled to a UI build.
+  return null;
+}
+
+async function readJson(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 256_000) throw httpError(413, "Request body is too large");
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return {};
   try {
-    if (existsSync(config.stateFile)) {
-      return { ...freshState(), ...JSON.parse(readFileSync(config.stateFile, "utf8")) };
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("JSON root must be an object");
     }
+    return parsed;
   } catch (error) {
-    console.warn(`Could not load state file: ${error.message}`);
-  }
-  return freshState();
-}
-
-function saveState() {
-  mkdirSync(resolve(config.stateFile, ".."), { recursive: true });
-  writeFileSync(config.stateFile, JSON.stringify(state, null, 2));
-}
-
-function resetExpiredKillState() {
-  if (state.kill.active && state.kill.date && state.kill.date !== todayKey()) {
-    state.kill = { active: false, date: null, activatedAt: null, reason: null };
-    logAction("KILL", "Previous trading-day kill state expired");
-    saveState();
+    throw httpError(400, `Invalid JSON body: ${error.message}`);
   }
 }
 
-function logAction(type, message) {
-  state.actions.push({ type, message, at: new Date().toISOString() });
-  state.actions = state.actions.slice(-200);
-  console.log(`[${type}] ${message}`);
+function requestUrl(req) {
+  try {
+    return new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    throw httpError(400, "Invalid request URL");
+  }
 }
 
-function readJson(req) {
-  return new Promise((resolveBody, rejectBody) => {
-    let data = "";
-    req.on("data", (chunk) => {
-      data += chunk;
-      if (data.length > 1_000_000) {
-        req.destroy();
-        rejectBody(new Error("Request body too large"));
-      }
-    });
-    req.on("end", () => {
-      if (!data) return resolveBody({});
-      try {
-        resolveBody(JSON.parse(data));
-      } catch {
-        rejectBody(new Error("Invalid JSON body"));
-      }
-    });
-  });
-}
-
-function sendJson(res, status, payload) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": config.appOrigin,
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-  });
+function sendJson(_req, res, status, payload) {
+  if (res.writableEnded) return;
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
 }
 
-function sendNoContent(res) {
-  res.writeHead(204, {
-    "Access-Control-Allow-Origin": config.appOrigin,
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+function sendError(req, res, error, context) {
+  const normalized = normalizeHttpError(error);
+  applySecurityHeaders(res);
+  applyCors(req, res, context.config);
+  sendJson(req, res, normalized.status, {
+    error: normalized.message,
+    code: normalized.code,
   });
-  res.end();
 }
 
-function assertBody(body, fields) {
-  for (const field of fields) {
-    if (!body[field]) throw new Error(`Missing required field: ${field}`);
+function normalizeHttpError(error) {
+  if (error instanceof GuardInvariantError) {
+    return { status: error.status, code: error.code, message: error.message };
   }
-}
-
-function requireSession() {
-  if (!state.session?.accessToken) throw new Error("Kite session is not connected");
-}
-
-function cleanParams(params) {
-  return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ""));
-}
-
-function sum(values) {
-  return values.reduce((total, value) => total + value, 0);
-}
-
-function todayKey() {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
-}
-
-function intEnv(name, fallback) {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function mustEnv(name) {
-  const value = process.env[name];
-  if (!value) {
-    console.warn(`${name} is not set. Copy .env.example to .env before connecting to Kite.`);
+  if (error instanceof KiteApiError) {
+    const status = error.errorType === "TokenException" ? 401 : 502;
+    return { status, code: error.errorType, message: error.message };
   }
-  return value || "";
+  if (error?.httpStatus) {
+    return { status: error.httpStatus, code: error.code || "HTTP_ERROR", message: error.message };
+  }
+  if (error instanceof TypeError || error instanceof RangeError) {
+    return { status: 400, code: "VALIDATION_ERROR", message: error.message };
+  }
+  return { status: 500, code: "INTERNAL_ERROR", message: "Internal server error" };
 }
 
-function formatCurrency(value) {
-  return Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+function httpError(status, message, code = "HTTP_ERROR") {
+  const error = new Error(message);
+  error.httpStatus = status;
+  error.code = code;
+  return error;
+}
+
+function clientAddress(req, config) {
+  const address = config.trustProxy
+    ? req.headers["x-forwarded-for"] || req.socket.remoteAddress
+    : req.socket.remoteAddress;
+  return String(address || "unknown")
+    .split(",")[0]
+    .trim();
+}
+
+function isMutation(method) {
+  return ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+}
+
+function tradingDate(date) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(date);
+}
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  let application;
+  try {
+    application = await createGuardApplication();
+    const address = await application.listen();
+    const port = typeof address === "object" && address ? address.port : application.config.port;
+    console.log(`TradeGuardian reactive lock running on http://${application.config.host}:${port}`);
+    if (application.startupError) {
+      console.error(`Guard engine is not active: ${application.startupError.message}`);
+    }
+  } catch (error) {
+    console.error(`Could not start TradeGuardian: ${error.message}`);
+    process.exitCode = 1;
+  }
+
+  const shutdown = async (signal) => {
+    console.log(`Received ${signal}; saving guard state and shutting down`);
+    try {
+      await application?.close();
+    } catch (error) {
+      console.error(`Shutdown failed: ${error.message}`);
+      process.exitCode = 1;
+    }
+  };
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
 }

@@ -1,0 +1,25 @@
+[Unit]
+Description=TradeGuardian reactive Zerodha loss guard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tradeguardian
+Group=tradeguardian
+WorkingDirectory=/opt/tradeguardian
+# backend/config.js loads /opt/tradeguardian/.env.
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node backend/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tradeguardian/.data
+
+[Install]
+WantedBy=multi-user.target
